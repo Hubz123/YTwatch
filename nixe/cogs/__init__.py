@@ -1,0 +1,1 @@
+# smoke-safe init
