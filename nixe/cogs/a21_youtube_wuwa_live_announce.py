@@ -206,10 +206,10 @@ def _env_int(name: str, default: int) -> int:
 # Runtime toggles (runtime_env.json -> os.environ via env overlay)
 # ----------------------------
 ENABLE = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
-ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1453036422465585283)
+ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1378824590087684106)
 POLL_SECONDS = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", 20)
 CONCURRENCY = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", 8)
-NOTIFY_ROLE_ID = _env_int("NIXE_YT_WUWA_NOTIFY_ROLE_ID", 0)
+NOTIFY_ROLE_ID = _env_int("NIXE_YT_WUWA_NOTIFY_ROLE_ID", 1473338687428235397)
 def _env_float(key: str, default: float) -> float:
     try:
         raw = os.getenv(key, "").strip()
@@ -267,8 +267,9 @@ WATCHLIST_STORE_MAX_HISTORY_SCAN = _env_int("NIXE_YT_WUWA_WATCHLIST_STORE_MAX_HI
 ENV_REGEX_OVERRIDE = os.getenv("NIXE_YT_WUWA_TITLE_REGEX", "").strip()
 ENV_TEMPLATE_OVERRIDE = os.getenv("NIXE_YT_WUWA_MESSAGE_TEMPLATE", "").strip()
 
-DEFAULT_TITLE_REGEX = r"(?:#\s*)?(?:鳴潮|鸣潮)|Wuthering\s*Waves|WuWa|Wuwa|wuwa"
-DEFAULT_MESSAGE_TEMPLATE = "Hey, {creator.name} just posted a new video!\n{video.link}"
+DEFAULT_TITLE_REGEX = r".*"
+DEFAULT_MESSAGE_TEMPLATE = "{video.title}
+{video.link}"
 
 # Normalize titles (brackets, fullwidth chars) to reduce regex misses.
 _BRACKET_TRANS = str.maketrans({c: " " for c in "【】[]()（）「」『』〈〉《》〔〕〖〗"})
@@ -2552,9 +2553,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             if cand_nm and (not cand_nm.startswith(("@", "＠"))) and (not _UC_ID_LIKE_RE.match(cand_nm)):
                 creator_name = cand_nm
         return t, vid, title, start_ts, creator_name
-    def _render_template(self, creator_name: str, video_link: str) -> str:
+    def _render_template(self, creator_name: str, video_title: str, video_link: str) -> str:
         msg = self.template
         msg = msg.replace("{creator.name}", creator_name)
+        msg = msg.replace("{video.title}", video_title)
         msg = msg.replace("{video.link}", video_link)
         return msg
 
@@ -2762,7 +2764,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
     async def _post(self, channel: discord.TextChannel, creator_name: str, title: str, video_id: str):
         # Use the canonical watch URL so Discord is more likely to render the native YouTube player-style embed.
         video_link = f"https://www.youtube.com/watch?v={video_id}"
-        content = self._render_template(creator_name, video_link)
+        content = self._render_template(creator_name, title, video_link)
 
         role_id = NOTIFY_ROLE_ID
         if role_id:
