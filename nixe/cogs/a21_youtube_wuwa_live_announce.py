@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import re
+import xml.etree.ElementTree as ET
 import unicodedata
 import html as _html
 from datetime import datetime, timezone, timedelta
@@ -268,8 +269,7 @@ ENV_REGEX_OVERRIDE = os.getenv("NIXE_YT_WUWA_TITLE_REGEX", "").strip()
 ENV_TEMPLATE_OVERRIDE = os.getenv("NIXE_YT_WUWA_MESSAGE_TEMPLATE", "").strip()
 
 DEFAULT_TITLE_REGEX = r".*"
-DEFAULT_MESSAGE_TEMPLATE = "{video.title}
-{video.link}"
+DEFAULT_MESSAGE_TEMPLATE = "{video.title}\n{video.link}"
 
 # Normalize titles (brackets, fullwidth chars) to reduce regex misses.
 _BRACKET_TRANS = str.maketrans({c: " " for c in "【】[]()（）「」『』〈〉《》〔〕〖〗"})
@@ -1609,6 +1609,53 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             return None
 
 
+    async def _fetch_latest_from_feed(self, channel_id: str) -> Optional[Tuple[str, str, Optional[datetime], str]]:
+        """Return (video_id, title, published_utc, author_name) from the public YouTube channel feed."""
+        if not channel_id:
+            return None
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        xml_txt = await self._http_get_text(feed_url)
+        if not xml_txt:
+            return None
+        try:
+            root = ET.fromstring(xml_txt)
+        except Exception:
+            return None
+
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "yt": "http://www.youtube.com/xml/schemas/2015",
+        }
+        entry = root.find("atom:entry", ns)
+        if entry is None:
+            return None
+
+        vid_el = entry.find("yt:videoId", ns)
+        title_el = entry.find("atom:title", ns)
+        pub_el = entry.find("atom:published", ns)
+        author_el = entry.find("atom:author/atom:name", ns)
+
+        video_id = (vid_el.text or "").strip() if (vid_el is not None and vid_el.text) else ""
+        title = (title_el.text or "").strip() if (title_el is not None and title_el.text) else ""
+        author = (author_el.text or "").strip() if (author_el is not None and author_el.text) else ""
+
+        published_dt: Optional[datetime] = None
+        if pub_el is not None and pub_el.text:
+            try:
+                s = pub_el.text.strip().replace("Z", "+00:00")
+                published_dt = datetime.fromisoformat(s)
+                if published_dt.tzinfo is None:
+                    published_dt = published_dt.replace(tzinfo=timezone.utc)
+                else:
+                    published_dt = published_dt.astimezone(timezone.utc)
+            except Exception:
+                published_dt = None
+
+        if not (video_id and title):
+            return None
+        return (video_id, title, published_dt, author)
+
+
     def _format_watchlist_entry(self, t: Dict[str, str]) -> str:
         # Display name: prefer proper channel name; never show '@handle' as the name.
         name = (t.get("name") or t.get("channel_name") or "").strip()
@@ -2553,10 +2600,9 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             if cand_nm and (not cand_nm.startswith(("@", "＠"))) and (not _UC_ID_LIKE_RE.match(cand_nm)):
                 creator_name = cand_nm
         return t, vid, title, start_ts, creator_name
-    def _render_template(self, creator_name: str, video_title: str, video_link: str) -> str:
+    def _render_template(self, creator_name: str, video_link: str) -> str:
         msg = self.template
         msg = msg.replace("{creator.name}", creator_name)
-        msg = msg.replace("{video.title}", video_title)
         msg = msg.replace("{video.link}", video_link)
         return msg
 
@@ -2764,7 +2810,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
     async def _post(self, channel: discord.TextChannel, creator_name: str, title: str, video_id: str):
         # Use the canonical watch URL so Discord is more likely to render the native YouTube player-style embed.
         video_link = f"https://www.youtube.com/watch?v={video_id}"
-        content = self._render_template(creator_name, title, video_link)
+        content = self._render_template(creator_name, video_link)
 
         role_id = NOTIFY_ROLE_ID
         if role_id:
@@ -2928,6 +2974,27 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             if r:
 
                 results.append(r)
+
+        # Also check latest uploads (videos/streams) via the public channel feed.
+        feed_results = []
+        for t0 in list(self.targets):
+            try:
+                t0 = await self._resolve_channel(t0)
+                cid0 = (t0.channel_id or "").strip()
+                if not cid0:
+                    continue
+                r0 = await asyncio.wait_for(self._fetch_latest_from_feed(cid0), timeout=CHECK_TIMEOUT_SECONDS)
+                if not r0:
+                    continue
+                vid0, title0, pub0, author0 = r0
+                if not (self.title_rx.search(title0) or self.title_rx.search(_normalize_title(title0))):
+                    continue
+                creator0 = (author0 or (t0.name or "")).strip()
+                feed_results.append((t0, vid0, title0, pub0, creator0))
+            except Exception:
+                continue
+
+        results.extend(feed_results)
 
         for res in results:
             if not res or isinstance(res, Exception):
