@@ -1,43 +1,29 @@
 # -*- coding: utf-8 -*-
-"""
-Wuthering Waves — YouTube Watchlist only (Render Free ready)
+"""Wuthering Waves — YouTube watchlist (uploads + live) + Render healthz.
 
-Runs:
-- Discord bot (loads ONLY YouTube watchlist cog)
-- Lightweight /healthz HTTP endpoint on $PORT (Render requirement)
+Env:
+- DISCORD_TOKEN (required)
+- PORT (Render provides)
 """
-from __future__ import annotations
 
 import os
 import asyncio
 import logging
-from logging.config import dictConfig
 
 import discord
 from discord.ext import commands
-
 from aiohttp import web
 
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
 
-def setup_logging() -> None:
-    level = os.getenv("LOG_LEVEL", os.getenv("PYTHON_LOGLEVEL", "INFO")).upper()
-    dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {"std": {"format": "%(asctime)s %(levelname)s:%(name)s:%(message)s"}},
-        "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "std", "level": level}},
-        "root": {"handlers": ["console"], "level": level},
-    })
-    try:
-        # discord.py helper (optional)
-        if hasattr(discord.utils, "setup_logging"):
-            discord.utils.setup_logging(level=(logging.DEBUG if level == "DEBUG" else logging.INFO))
-    except Exception:
-        pass
+log = logging.getLogger("wuthering-waves.main")
 
 
-async def start_health_server() -> tuple[web.AppRunner, web.TCPSite]:
-    app = web.Application()
+async def _start_health_server() -> None:
+    logger = logging.getLogger("wuthering-waves.health")
 
     async def healthz(_req: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "service": "wuthering-waves"})
@@ -45,18 +31,23 @@ async def start_health_server() -> tuple[web.AppRunner, web.TCPSite]:
     async def index(_req: web.Request) -> web.Response:
         return web.Response(text="Wuthering Waves OK")
 
-    app.router.add_get("/healthz", healthz)
-    app.router.add_get("/", index)
+    app = web.Application()
+    # Accept any method (some monitors use HEAD)
+    app.router.add_route("*", "/healthz", healthz)
+    app.router.add_route("*", "/", index)
 
-    runner = web.AppRunner(app, access_log=None)
+    runner = web.AppRunner(app)
     await runner.setup()
-
-    port = int(os.getenv("PORT", "8080"))
-    host = os.getenv("HOST", "0.0.0.0")
-    site = web.TCPSite(runner, host=host, port=port)
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.getLogger("wuthering-waves.health").info("health server up on %s:%s", host, port)
-    return runner, site
+    logger.info("health server up on 0.0.0.0:%s", port)
+
+
+INTENTS = discord.Intents.default()
+INTENTS.guilds = True
+INTENTS.messages = True
+INTENTS.message_content = True
 
 
 class WutheringWavesBot(commands.Bot):
@@ -67,36 +58,21 @@ class WutheringWavesBot(commands.Bot):
 
 
 async def main() -> None:
-    setup_logging()
-    log = logging.getLogger("wuthering-waves.main")
-
     token = (os.getenv("DISCORD_TOKEN") or "").strip()
     if not token:
         raise SystemExit("DISCORD_TOKEN belum diset.")
 
-    intents = discord.Intents.default()
-    intents.guilds = True
-    intents.messages = True
-    intents.message_content = True
+    bot = WutheringWavesBot(command_prefix=os.getenv("COMMAND_PREFIX", "!"), intents=INTENTS)
 
-    bot = WutheringWavesBot(command_prefix=os.getenv("COMMAND_PREFIX", "!"), intents=intents)
+    # health server must be up for Render free plan
+    await _start_health_server()
 
-    runner = None
-    try:
-        runner, _site = await start_health_server()
-        async with bot:
-            await bot.start(token)
-    finally:
-        if runner is not None:
-            try:
-                await runner.cleanup()
-            except Exception:
-                pass
-        log.info("shutdown complete")
+    async with bot:
+        await bot.start(token)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        pass
+        log.info("shutdown complete")

@@ -1,7 +1,3 @@
 {
-  "announced": {},
-  "announced_vids": {},
-  "resolved": {},
-  "yt_channel_name_cache": {},
-  "watchlist_store_mid": 0
+  "announced_video_ids": []
 }

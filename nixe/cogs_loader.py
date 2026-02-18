@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-"""Cogs loader — HARD allowlist for YouTube watchlist only."""
-
 from __future__ import annotations
 
 import logging
@@ -20,7 +18,7 @@ async def load_all(bot) -> List[str]:
         try:
             await bot.load_extension(name)
             loaded.append(name)
-        except Exception as e:
-            log.critical("Failed to load cog %s: %r", name, e, exc_info=True)
+        except Exception:
+            log.critical("Failed to load cog %s", name, exc_info=True)
             raise
     return loaded
