@@ -8,7 +8,6 @@ import logging
 import os
 import pathlib
 import re
-import xml.etree.ElementTree as ET
 import unicodedata
 import html as _html
 from datetime import datetime, timezone, timedelta
@@ -206,11 +205,14 @@ def _env_int(name: str, default: int) -> int:
 # ----------------------------
 # Runtime toggles (runtime_env.json -> os.environ via env overlay)
 # ----------------------------
+# AIO defaults (Render-friendly): enabled by default, and pinned to Hubz's target channel.
 ENABLE = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
-ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1378824590087684106)
+ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1472521135680786606)
 POLL_SECONDS = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", 20)
 CONCURRENCY = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", 8)
-NOTIFY_ROLE_ID = _env_int("NIXE_YT_WUWA_NOTIFY_ROLE_ID", 1473338687428235397)
+NOTIFY_ROLE_ID = _env_int("NIXE_YT_WUWA_NOTIFY_ROLE_ID", 0)
+# If this is a *member/user* id (not a role), use a user mention (<@id>) to avoid "Unknown role".
+NOTIFY_USER_ID = _env_int("NIXE_YT_WUWA_NOTIFY_USER_ID", 1473338687428235397)
 def _env_float(key: str, default: float) -> float:
     try:
         raw = os.getenv(key, "").strip()
@@ -237,9 +239,10 @@ DISCORD_CLOUDFLARE_COOLDOWN_SECONDS = _env_int("NIXE_DISCORD_CLOUDFLARE_COOLDOWN
 DISCORD_ANNOUNCE_QUEUE_MAXSIZE = _env_int("NIXE_DISCORD_ANNOUNCE_QUEUE_MAXSIZE", 200)
 
 
-ONLY_NEW_AFTER_BOOT = os.getenv("NIXE_YT_WUWA_ONLY_NEW_AFTER_BOOT", "0").strip() == "1"
+ONLY_NEW_AFTER_BOOT = os.getenv("NIXE_YT_WUWA_ONLY_NEW_AFTER_BOOT", "1").strip() == "1"
 BOOT_GRACE_SECONDS = _env_int("NIXE_YT_WUWA_BOOT_GRACE_SECONDS", 30)
-ANNOUNCE_MAX_AGE_MINUTES = _env_int("NIXE_YT_WUWA_ANNOUNCE_MAX_AGE_MINUTES", 0)
+# Hard cutoff for "stale" items (prevents announcing things from hours/days ago).
+ANNOUNCE_MAX_AGE_MINUTES = _env_int("NIXE_YT_WUWA_ANNOUNCE_MAX_AGE_MINUTES", 10)
 DEBUG = os.getenv("NIXE_YT_WUWA_DEBUG", "0").strip() == "1"
 
 # If enabled, let Discord generate the native YouTube embed (play button overlay).
@@ -268,7 +271,9 @@ WATCHLIST_STORE_MAX_HISTORY_SCAN = _env_int("NIXE_YT_WUWA_WATCHLIST_STORE_MAX_HI
 ENV_REGEX_OVERRIDE = os.getenv("NIXE_YT_WUWA_TITLE_REGEX", "").strip()
 ENV_TEMPLATE_OVERRIDE = os.getenv("NIXE_YT_WUWA_MESSAGE_TEMPLATE", "").strip()
 
+# Notify ALL uploads/lives from the watchlisted channel (no game/title filtering).
 DEFAULT_TITLE_REGEX = r".*"
+# Keep it simple: ping + title + link (Discord auto-embeds thumbnail/title from the link).
 DEFAULT_MESSAGE_TEMPLATE = "{video.title}\n{video.link}"
 
 # Normalize titles (brackets, fullwidth chars) to reduce regex misses.
@@ -1609,53 +1614,6 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             return None
 
 
-    async def _fetch_latest_from_feed(self, channel_id: str) -> Optional[Tuple[str, str, Optional[datetime], str]]:
-        """Return (video_id, title, published_utc, author_name) from the public YouTube channel feed."""
-        if not channel_id:
-            return None
-        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-        xml_txt = await self._http_get_text(feed_url)
-        if not xml_txt:
-            return None
-        try:
-            root = ET.fromstring(xml_txt)
-        except Exception:
-            return None
-
-        ns = {
-            "atom": "http://www.w3.org/2005/Atom",
-            "yt": "http://www.youtube.com/xml/schemas/2015",
-        }
-        entry = root.find("atom:entry", ns)
-        if entry is None:
-            return None
-
-        vid_el = entry.find("yt:videoId", ns)
-        title_el = entry.find("atom:title", ns)
-        pub_el = entry.find("atom:published", ns)
-        author_el = entry.find("atom:author/atom:name", ns)
-
-        video_id = (vid_el.text or "").strip() if (vid_el is not None and vid_el.text) else ""
-        title = (title_el.text or "").strip() if (title_el is not None and title_el.text) else ""
-        author = (author_el.text or "").strip() if (author_el is not None and author_el.text) else ""
-
-        published_dt: Optional[datetime] = None
-        if pub_el is not None and pub_el.text:
-            try:
-                s = pub_el.text.strip().replace("Z", "+00:00")
-                published_dt = datetime.fromisoformat(s)
-                if published_dt.tzinfo is None:
-                    published_dt = published_dt.replace(tzinfo=timezone.utc)
-                else:
-                    published_dt = published_dt.astimezone(timezone.utc)
-            except Exception:
-                published_dt = None
-
-        if not (video_id and title):
-            return None
-        return (video_id, title, published_dt, author)
-
-
     def _format_watchlist_entry(self, t: Dict[str, str]) -> str:
         # Display name: prefer proper channel name; never show '@handle' as the name.
         name = (t.get("name") or t.get("channel_name") or "").strip()
@@ -1725,7 +1683,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
         # Show config (must match the JSON attachment).
         try:
-            enabled = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
+            enabled = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
             poll_s = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
             conc = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
             ch_id = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1891,7 +1849,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             cfg_out["targets"] = list(targets)
 
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
+                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1953,7 +1911,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
             # Force cfg values to follow current runtime env (so thread JSON + embed stay consistent).
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
+                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -2600,9 +2558,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             if cand_nm and (not cand_nm.startswith(("@", "＠"))) and (not _UC_ID_LIKE_RE.match(cand_nm)):
                 creator_name = cand_nm
         return t, vid, title, start_ts, creator_name
-    def _render_template(self, creator_name: str, video_link: str) -> str:
+    def _render_template(self, creator_name: str, title: str, video_link: str) -> str:
         msg = self.template
         msg = msg.replace("{creator.name}", creator_name)
+        msg = msg.replace("{video.title}", title or "")
         msg = msg.replace("{video.link}", video_link)
         return msg
 
@@ -2810,11 +2769,18 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
     async def _post(self, channel: discord.TextChannel, creator_name: str, title: str, video_id: str):
         # Use the canonical watch URL so Discord is more likely to render the native YouTube player-style embed.
         video_link = f"https://www.youtube.com/watch?v={video_id}"
-        content = self._render_template(creator_name, video_link)
+        content = self._render_template(creator_name, title, video_link)
 
-        role_id = NOTIFY_ROLE_ID
-        if role_id:
-            content = f"<@&{role_id}> {content}"
+        # Mention preference:
+        # 1) If NOTIFY_USER_ID is set/non-zero -> mention a user (<@id>)
+        # 2) Else if NOTIFY_ROLE_ID is set/non-zero -> mention a role (<@&id>)
+        user_id = int(NOTIFY_USER_ID or 0)
+        role_id = int(NOTIFY_ROLE_ID or 0)
+        if user_id:
+            content = f"<@{user_id}> {content}".strip()
+            allowed_mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
+        elif role_id:
+            content = f"<@&{role_id}> {content}".strip()
             allowed_mentions = discord.AllowedMentions(roles=True, users=False, everyone=False)
         else:
             allowed_mentions = discord.AllowedMentions.none()
@@ -2907,7 +2873,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         except Exception:
             pass
 
-        if not (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"):
+        if not (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"):
             return
 
         ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
@@ -2974,27 +2940,6 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             if r:
 
                 results.append(r)
-
-        # Also check latest uploads (videos/streams) via the public channel feed.
-        feed_results = []
-        for t0 in list(self.targets):
-            try:
-                t0 = await self._resolve_channel(t0)
-                cid0 = (t0.channel_id or "").strip()
-                if not cid0:
-                    continue
-                r0 = await asyncio.wait_for(self._fetch_latest_from_feed(cid0), timeout=CHECK_TIMEOUT_SECONDS)
-                if not r0:
-                    continue
-                vid0, title0, pub0, author0 = r0
-                if not (self.title_rx.search(title0) or self.title_rx.search(_normalize_title(title0))):
-                    continue
-                creator0 = (author0 or (t0.name or "")).strip()
-                feed_results.append((t0, vid0, title0, pub0, creator0))
-            except Exception:
-                continue
-
-        results.extend(feed_results)
 
         for res in results:
             if not res or isinstance(res, Exception):
@@ -3112,7 +3057,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
         # One-time startup cleanup: remove duplicate announce messages already present (best-effort).
         try:
-            if (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1") and (not getattr(self, "_dedupe_sweep_done", False)):
+            if (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1") and (not getattr(self, "_dedupe_sweep_done", False)):
                 ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
                 if not isinstance(ch, discord.TextChannel):
                     try:
