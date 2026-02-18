@@ -206,7 +206,7 @@ def _env_int(name: str, default: int) -> int:
 # ----------------------------
 # Runtime toggles (runtime_env.json -> os.environ via env overlay)
 # ----------------------------
-ENABLE = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+ENABLE = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
 ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1378824590087684106)
 POLL_SECONDS = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", 20)
 CONCURRENCY = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", 8)
@@ -1725,7 +1725,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
         # Show config (must match the JSON attachment).
         try:
-            enabled = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+            enabled = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
             poll_s = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
             conc = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
             ch_id = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1891,7 +1891,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             cfg_out["targets"] = list(targets)
 
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1953,7 +1953,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
             # Force cfg values to follow current runtime env (so thread JSON + embed stay consistent).
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -2907,7 +2907,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         except Exception:
             pass
 
-        if not (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"):
+        if not (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1"):
             return
 
         ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
@@ -3112,7 +3112,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
         # One-time startup cleanup: remove duplicate announce messages already present (best-effort).
         try:
-            if (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1") and (not getattr(self, "_dedupe_sweep_done", False)):
+            if (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "1").strip() == "1") and (not getattr(self, "_dedupe_sweep_done", False)):
                 ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
                 if not isinstance(ch, discord.TextChannel):
                     try:
