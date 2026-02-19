@@ -206,11 +206,11 @@ def _env_int(name: str, default: int) -> int:
 # ----------------------------
 # Runtime toggles (runtime_env.json -> os.environ via env overlay)
 # ----------------------------
-ENABLE = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
-ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1453036422465585283)
+ENABLE = True  # hardcoded ON; no ENV gate
+ANNOUNCE_CHANNEL_ID = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", 1472521135680786606)
 POLL_SECONDS = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", 20)
 CONCURRENCY = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", 8)
-NOTIFY_ROLE_ID = _env_int("NIXE_YT_WUWA_NOTIFY_ROLE_ID", 0)
+NOTIFY_ROLE_ID = 1472530055954698372  # hardcoded notify role (Member)
 def _env_float(key: str, default: float) -> float:
     try:
         raw = os.getenv(key, "").strip()
@@ -1702,7 +1702,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
         # Show config (must match the JSON attachment).
         try:
-            enabled = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+            enabled = True
             poll_s = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
             conc = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
             ch_id = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1868,7 +1868,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             cfg_out["targets"] = list(targets)
 
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+                cfg_out["enabled"] = True
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -1930,7 +1930,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
 
             # Force cfg values to follow current runtime env (so thread JSON + embed stay consistent).
             try:
-                cfg_out["enabled"] = os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"
+                cfg_out["enabled"] = True
                 cfg_out["poll_seconds"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_POLL_SECONDS", POLL_SECONDS)
                 cfg_out["concurrency"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CONCURRENCY", CONCURRENCY)
                 cfg_out["announce_channel_id"] = _env_int("NIXE_YT_WUWA_ANNOUNCE_CHANNEL_ID", ANNOUNCE_CHANNEL_ID)
@@ -2886,12 +2886,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         video_link = f"https://www.youtube.com/watch?v={video_id}"
         content = self._render_template(creator_name, video_link)
 
-        role_id = NOTIFY_ROLE_ID
-        if role_id:
-            content = f"<@&{role_id}> {content}"
-            allowed_mentions = discord.AllowedMentions(roles=True, users=False, everyone=False)
-        else:
-            allowed_mentions = discord.AllowedMentions.none()
+        # Hardcoded role mention (per deployment requirement)
+        role_id = int(NOTIFY_ROLE_ID)
+        content = f"<@&{role_id}> {content}"
+        allowed_mentions = discord.AllowedMentions(roles=True, users=False, everyone=False)
 
         # If we are using custom embeds, prevent Discord from also unfurling the raw URL in the message content.
         # Wrapping the URL in angle brackets suppresses native embeds while keeping it clickable.
@@ -2981,16 +2979,19 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         except Exception:
             pass
 
-        if not (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1"):
-            return
-
         ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
         if not isinstance(ch, discord.TextChannel):
             try:
                 ch = await self.bot.fetch_channel(ANNOUNCE_CHANNEL_ID)
-            except Exception:
+            except Exception as e:
+                if not getattr(self, '_warned_bad_channel', False):
+                    self._warned_bad_channel = True
+                    log.warning('[yt-wuwa] cannot fetch announce channel_id=%s: %r', ANNOUNCE_CHANNEL_ID, e)
                 return
         if not isinstance(ch, discord.TextChannel):
+            if not getattr(self, '_warned_bad_channel', False):
+                self._warned_bad_channel = True
+                log.warning('[yt-wuwa] announce channel_id=%s is not a TextChannel', ANNOUNCE_CHANNEL_ID)
             return
 
         # Run checks with per-target timeout and a hard loop deadline to avoid multi-minute stalls.
@@ -3091,13 +3092,40 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 if cand:
                     keys.append(str(cand))
             if not keys:
-                keys = [t.query]
+                keys = [str(t.query)]
+            # Separate live vs upload keys so LIVE isn't suppressed by an earlier upload announce (and vice-versa).
+            keys = [f"{k}|{kind}" for k in keys]
 
             ann_map = self.state.setdefault("announced", {})   # key -> last video_id
             ann_vids = self.state.setdefault("announced_vids", {})  # video_id -> unix_ts (or 1)
 
             # Hard de-dupe by video id (covers key changes across restarts).
-            if str(vid) in ann_vids or str(vid) in _INFLIGHT_VIDS or str(vid) in set(str(v) for v in ann_map.values()):
+            # NOTE: we keep live vs upload separate. A stream can appear as a "new upload" in RSS while actually LIVE.
+            # If we previously announced it as upload, we still want to allow a one-time LIVE announce.
+            vid_key = str(vid)
+            ann_entry = ann_vids.get(vid_key)
+            if vid_key in _INFLIGHT_VIDS:
+                continue
+            # legacy: ann_entry may be int timestamp; new: dict {ts, kind}
+            ann_kind = None
+            if isinstance(ann_entry, dict):
+                ann_kind = ann_entry.get("kind")
+            # If already announced for same kind, skip.
+            if ann_entry is not None and ann_kind == kind:
+                continue
+            # If legacy entry exists, treat as 'upload' unless we have an explicit live key.
+            if ann_entry is not None and ann_kind is None:
+                if kind != "live":
+                    continue
+                # allow LIVE announce if we haven't announced LIVE for this target yet
+                if ann_map.get(f"{t.query}|live") == vid:
+                    continue
+            # Also skip if this vid already present as last value for this kind key (defensive)
+            if str(vid) in set(str(v) for v in ann_map.values()):
+                # Only skip when it's already recorded under our kind key
+                if ann_map.get(f"{t.query}|{kind}") == vid:
+                    continue
+
                 # keep keys aligned to the vid to prevent future re-announce with a new key
                 for k in keys:
                     ann_map[k] = vid
@@ -3117,7 +3145,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 if start_ts < (self.boot_time - timedelta(seconds=max(0, BOOT_GRACE_SECONDS))):
                     for k in keys:
                         ann_map[k] = vid
-                    ann_vids[str(vid)] = int(now.timestamp())
+                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                     _write_json_best_effort(STATE_PATH, self.state)
                     age_min = int((now - start_ts).total_seconds() // 60) if start_ts else -1
                     if kind == "live":
@@ -3131,7 +3159,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 if (now - start_ts).total_seconds() > (ANNOUNCE_MAX_AGE_MINUTES * 60):
                     for k in keys:
                         ann_map[k] = vid
-                    ann_vids[str(vid)] = int(now.timestamp())
+                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                     _write_json_best_effort(STATE_PATH, self.state)
                     age_min = int((now - start_ts).total_seconds() // 60)
                     if kind == "live":
@@ -3181,7 +3209,7 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 ann_vids = self.state.setdefault("announced_vids", {})
                 for k in keys:
                     ann_map[k] = vid
-                ann_vids[str(vid)] = int(datetime.now(timezone.utc).timestamp())
+                ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                 _write_json_best_effort(STATE_PATH, self.state)
                 delay_min = None
                 if start_ts is not None:
@@ -3201,9 +3229,18 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         await self.bot.wait_until_ready()
         await self._ensure_session()
 
+        # One-shot startup log so it's obvious the watcher is active.
+        if not getattr(self, '_logged_start', False):
+            self._logged_start = True
+            try:
+                self._reload_watchlist()
+            except Exception:
+                pass
+            log.info('[yt-wuwa] watcher started poll=%ss targets=%s channel_id=%s', POLL_SECONDS, len(getattr(self, 'targets', []) or []), ANNOUNCE_CHANNEL_ID)
+
         # One-time startup cleanup: remove duplicate announce messages already present (best-effort).
         try:
-            if (os.getenv("NIXE_YT_WUWA_ANNOUNCE_ENABLE", "0").strip() == "1") and (not getattr(self, "_dedupe_sweep_done", False)):
+            if (not getattr(self, "_dedupe_sweep_done", False)):
                 ch = self.bot.get_channel(ANNOUNCE_CHANNEL_ID)
                 if not isinstance(ch, discord.TextChannel):
                     try:

@@ -1,3 +1,24 @@
 {
-  "announced_video_ids": []
+  "announced": {
+    "https://www.youtube.com/channel/UC60o6OxOsqZpTq7xca8IL4w|live": "Pm_hKii-laU",
+    "ZhenX|live": "Pm_hKii-laU"
+  },
+  "announced_vids": {
+    "Pm_hKii-laU": {
+      "ts": 1771506027,
+      "kind": "live"
+    }
+  },
+  "resolved": {
+    "https://www.youtube.com/channel/UC60o6OxOsqZpTq7xca8IL4w": {
+      "channel_id": "",
+      "title": "ZhenX",
+      "url": "https://www.youtube.com/channel/UC60o6OxOsqZpTq7xca8IL4w"
+    },
+    "ZhenX": {
+      "channel_id": "",
+      "title": "ZhenX",
+      "url": "https://www.youtube.com/channel/UC60o6OxOsqZpTq7xca8IL4w"
+    }
+  }
 }
