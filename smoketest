@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+import os, sys, subprocess, pathlib
+
+def run(cmd, **kw):
+    print('+', ' '.join(cmd))
+    return subprocess.run(cmd, check=True, text=True, **kw)
+
+root = pathlib.Path(__file__).resolve().parent
+os.chdir(root)
+
+# 1) compileall
+run([sys.executable, '-m', 'compileall', '-q', '.'])
+
+# 2) import sanity
+run([sys.executable, '-c', 'import main; import nixe.cogs_loader; import nixe.cogs.a21_youtube_wuwa_live_announce as a21; print("IMPORT_OK")'])
+
+print('SMOKETEST_OK')

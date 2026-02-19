@@ -9,6 +9,7 @@ log = logging.getLogger("nixe.cogs_loader")
 COGS_ONLY = [
     "nixe.cogs.a00_env_hybrid_overlay",
     "nixe.cogs.a21_youtube_wuwa_live_announce",
+    "nixe.cogs.ready_shim",
 ]
 
 

@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+import os, sys, pathlib, importlib
+from discord.ext import commands
+
+root = pathlib.Path(__file__).resolve().parent
+os.chdir(root)
+
+cogs_dir = root / 'nixe' / 'cogs'
+count = 0
+for path in sorted(cogs_dir.glob('*.py')):
+    if path.name.startswith('_') or path.name == '__init__.py':
+        continue
+    modname = f"nixe.cogs.{path.stem}"
+    mod = importlib.import_module(modname)
+    for obj in vars(mod).values():
+        try:
+            if isinstance(obj, type) and issubclass(obj, commands.Cog) and obj is not commands.Cog:
+                count += 1
+        except Exception:
+            continue
+
+print(f'SMOKE_COGS_OK {count}')
+sys.exit(0 if count > 0 else 1)

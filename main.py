@@ -10,6 +10,32 @@ import os
 import asyncio
 import logging
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Best-effort .env loader for local runs.
+
+    Silent by design; does not override already-set env vars.
+    """
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if not k or k in os.environ:
+                    continue
+                os.environ[k] = v
+    except FileNotFoundError:
+        return
+    except Exception:
+        return
+
 import discord
 from discord.ext import commands
 from aiohttp import web
@@ -36,7 +62,8 @@ async def _start_health_server() -> None:
     app.router.add_route("*", "/healthz", healthz)
     app.router.add_route("*", "/", index)
 
-    runner = web.AppRunner(app)
+    # Render health probes spam /healthz; disable aiohttp access log.
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     port = int(os.getenv("PORT", "10000"))
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -58,6 +85,8 @@ class WutheringWavesBot(commands.Bot):
 
 
 async def main() -> None:
+    # Local dev convenience (Render sets env vars directly)
+    _load_dotenv()
     token = (os.getenv("DISCORD_TOKEN") or "").strip()
     if not token:
         raise SystemExit("DISCORD_TOKEN belum diset.")

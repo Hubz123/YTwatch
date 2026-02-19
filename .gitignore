@@ -1,0 +1,11 @@
+# Local secrets & caches
+.env
+*.env
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+.zip
+.rar
+.env

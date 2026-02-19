@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+import os, sys, subprocess, pathlib
+
+def run(cmd, **kw):
+    print('+', ' '.join(cmd))
+    return subprocess.run(cmd, check=True, text=True, **kw)
+
+root = pathlib.Path(__file__).resolve().parent
+os.chdir(root)
+
+# Offline/strict flags are accepted for compatibility.
+# This repo's super test simply extends smoketest with extension-load.
+args = set(sys.argv[1:])
+offline = ('--offline' in args)
+strict = ('--strict' in args)
+
+# 1) base smoketest
+run([sys.executable, str(root/'smoketest')])
+
+# 2) Ensure the discord extension loads without touching the network.
+code = r'''
+import asyncio
+import discord
+from discord.ext import commands
+
+async def main():
+    intents = discord.Intents.none()
+    bot = commands.Bot(command_prefix='!', intents=intents)
+
+    # If offline, guard against accidental session creation during load.
+    # (Loading should not create sessions; if it does, that's a bug.)
+    if %s:
+        import aiohttp
+        _orig = aiohttp.ClientSession
+        class _BlockedSession:
+            def __init__(self, *a, **k):
+                raise RuntimeError('ClientSession blocked in --offline smoketest')
+        aiohttp.ClientSession = _BlockedSession
+
+    await bot.load_extension('nixe.cogs.a21_youtube_wuwa_live_announce')
+    await bot.close()
+
+asyncio.run(main())
+print('EXTENSION_LOAD_OK')
+''' % ('True' if offline else 'False')
+
+run([sys.executable, '-c', code])
+
+print('SMOKETEST_SUPER_OK')
