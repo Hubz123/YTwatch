@@ -2316,6 +2316,39 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             except Exception:
                 return None
 
+
+    async def _http_get_text_with_final_url(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+        """Fetch text and also return the final URL after redirects.
+
+        YouTube /live endpoints often redirect to a canonical /watch?v=... URL when the channel is live.
+        Relying on the final redirected URL is more robust than scraping the /live HTML.
+        """
+        await self._ensure_session()
+        assert self.session is not None
+
+        headers = None
+        if "www.youtube.com/feeds/videos.xml?channel_id=" in url:
+            ts = int(datetime.now(tz=timezone.utc).timestamp())
+            joiner = "&" if "?" in url else "?"
+            url = f"{url}{joiner}_={ts}"
+            headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+
+        async with self.sem:
+            try:
+                async with self.session.get(url, allow_redirects=True, headers=headers) as r:
+                    final_url = str(getattr(r, "url", "") or "")
+                    if r.status != 200:
+                        if DEBUG:
+                            try:
+                                body = await r.text()
+                            except Exception:
+                                body = ""
+                            log.warning('[yt-wuwa] http %s %s status=%s final=%s body=%s', r.method, url, r.status, final_url, body[:200])
+                        return None, final_url or None
+                    return await r.text(), final_url or None
+            except Exception:
+                return None, None
+
     def _extract_video_id_fallback(self, html: str) -> Optional[str]:
         """Best-effort extraction of a videoId from a /live page HTML when JSON parsing fails."""
         if not html:
@@ -2415,9 +2448,22 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
         except Exception:
             pass
         live_url = base.rstrip("/") + "/live"
-        html = await self._http_get_text(live_url)
+        html, final_url = await self._http_get_text_with_final_url(live_url)
         if not html:
             return None
+
+        # If /live redirected to a canonical /watch?v=... URL, prefer that video id.
+        redirected_vid = None
+        try:
+            fu = (final_url or "").strip()
+            if fu:
+                u = urlparse(fu)
+                q = dict([p.split("=", 1) for p in (u.query or "").split("&") if "=" in p])
+                v = q.get("v")
+                if v:
+                    redirected_vid = v
+        except Exception:
+            redirected_vid = None
 
         # Fast path: parse ytInitialPlayerResponse (scrape)
         player = _extract_yt_var_json(html, 'ytInitialPlayerResponse') or _extract_json_blob(html, _YTIPR_RE)
@@ -2440,9 +2486,8 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 return None
         else:
             # Fallback path (NO YouTube API):
-            # - Extract a probable live videoId from the /live page HTML.
-            # - Fetch the canonical watch page and parse ytInitialPlayerResponse there.
-            vid = self._extract_video_id_fallback(html)
+            # Prefer the redirected video id (most reliable), otherwise scrape from /live HTML.
+            vid = redirected_vid or self._extract_video_id_fallback(html)
             if not vid:
                 return None
 
@@ -3008,6 +3053,9 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                     if r_live:
                         t1, vid1, title1, ts1, creator1 = r_live
                         out.append(("live", t1, vid1, title1, ts1, creator1))
+                        live_vid = str(vid1)
+                    else:
+                        live_vid = None
                 except Exception:
                     pass
 
@@ -3015,7 +3063,14 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                     r_up = await asyncio.wait_for(self._check_upload(tt), timeout=timeout)
                     if r_up:
                         t2, vid2, title2, ts2, creator2 = r_up
-                        out.append(("upload", t2, vid2, title2, ts2, creator2))
+                        # Avoid double-announce: a currently-live stream can also appear as the newest "upload" in RSS.
+                        try:
+                            if live_vid and str(vid2) == str(live_vid):
+                                pass
+                            else:
+                                out.append(("upload", t2, vid2, title2, ts2, creator2))
+                        except Exception:
+                            out.append(("upload", t2, vid2, title2, ts2, creator2))
                 except Exception:
                     pass
 
