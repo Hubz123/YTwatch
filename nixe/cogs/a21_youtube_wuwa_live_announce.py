@@ -3141,6 +3141,17 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 continue
             kind, t, vid, title, start_ts, creator_name = res
 
+            # Some creators restart the *same* live (same video_id) multiple times.
+            # If YouTube keeps the same video_id, we still want to announce each new
+            # live session. We treat a change in live start timestamp as a new session.
+            live_start_unix: Optional[int] = None
+            if kind == "live" and start_ts is not None:
+                try:
+                    live_start_unix = int(start_ts.timestamp())
+                except Exception:
+                    live_start_unix = None
+            is_live_restart = False
+
             # Build stable keys to avoid duplicate posts when resolution improves (query->channel_id).
             keys: List[str] = []
             for cand in (t.channel_id, t.base_url(), t.url, t.handle, t.query, t.name):
@@ -3163,10 +3174,27 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 continue
             # legacy: ann_entry may be int timestamp; new: dict {ts, kind}
             ann_kind = None
+            ann_live_start = None
             if isinstance(ann_entry, dict):
                 ann_kind = ann_entry.get("kind")
+                ann_live_start = ann_entry.get("start")
+            # If this is LIVE and we've seen this video_id before, allow re-announce
+            # when the live start timestamp changes (new live session on same vid).
+            if kind == "live" and ann_entry is not None and live_start_unix is not None:
+                try:
+                    if isinstance(ann_live_start, (int, float)) and int(ann_live_start) != int(live_start_unix):
+                        is_live_restart = True
+                    # Back-compat: older state may not store "start".
+                    # If we have a recorded announce ts and the extracted live start
+                    # is clearly newer, treat it as a restart.
+                    if (not is_live_restart) and (ann_live_start is None) and isinstance(ann_entry, dict):
+                        ts0 = ann_entry.get("ts")
+                        if isinstance(ts0, (int, float)) and int(live_start_unix) > int(ts0) + 60:
+                            is_live_restart = True
+                except Exception:
+                    pass
             # If already announced for same kind, skip.
-            if ann_entry is not None and ann_kind == kind:
+            if ann_entry is not None and ann_kind == kind and not is_live_restart:
                 continue
             # If legacy entry exists, treat as 'upload' unless we have an explicit live key.
             if ann_entry is not None and ann_kind is None:
@@ -3175,8 +3203,9 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 # allow LIVE announce if we haven't announced LIVE for this target yet
                 if ann_map.get(f"{t.query}|live") == vid:
                     continue
-            # Also skip if this vid already present as last value for this kind key (defensive)
-            if str(vid) in set(str(v) for v in ann_map.values()):
+            # Also skip if this vid already present as last value for this kind key (defensive).
+            # NOTE: for LIVE restarts on the same video_id, we intentionally allow a re-announce.
+            if (not is_live_restart) and str(vid) in set(str(v) for v in ann_map.values()):
                 # Only skip when it's already recorded under our kind key
                 if ann_map.get(f"{t.query}|{kind}") == vid:
                     continue
@@ -3200,7 +3229,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 if start_ts < (self.boot_time - timedelta(seconds=max(0, BOOT_GRACE_SECONDS))):
                     for k in keys:
                         ann_map[k] = vid
-                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
+                    if kind == "live" and live_start_unix is not None:
+                        ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind, "start": int(live_start_unix)}
+                    else:
+                        ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                     _write_json_best_effort(STATE_PATH, self.state)
                     age_min = int((now - start_ts).total_seconds() // 60) if start_ts else -1
                     if kind == "live":
@@ -3214,7 +3246,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 if (now - start_ts).total_seconds() > (ANNOUNCE_MAX_AGE_MINUTES * 60):
                     for k in keys:
                         ann_map[k] = vid
-                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
+                    if kind == "live" and live_start_unix is not None:
+                        ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind, "start": int(live_start_unix)}
+                    else:
+                        ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                     _write_json_best_effort(STATE_PATH, self.state)
                     age_min = int((now - start_ts).total_seconds() // 60)
                     if kind == "live":
@@ -3226,12 +3261,17 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
             # Cross-instance de-dupe: if another instance already announced this video_id, align local state and skip.
             try:
                 vid_s = str(vid)
-                if await self._announce_channel_has_video(ch, vid_s):
+                # If this is a restarted LIVE on the same video_id, do not suppress
+                # based on existing history messages (they represent the previous session).
+                if (not is_live_restart) and await self._announce_channel_has_video(ch, vid_s):
                     ann_map = self.state.setdefault("announced", {})
                     ann_vids = self.state.setdefault("announced_vids", {})
                     for k in keys:
                         ann_map[k] = vid
-                    ann_vids[vid_s] = int(datetime.now(timezone.utc).timestamp())
+                    if kind == "live" and live_start_unix is not None:
+                        ann_vids[vid_s] = {"ts": int(datetime.now(timezone.utc).timestamp()), "kind": kind, "start": int(live_start_unix)}
+                    else:
+                        ann_vids[vid_s] = {"ts": int(datetime.now(timezone.utc).timestamp()), "kind": kind}
                     _write_json_best_effort(STATE_PATH, self.state)
                     continue
             except Exception:
@@ -3264,7 +3304,10 @@ class YouTubeWuWaLiveAnnouncer(commands.Cog):
                 ann_vids = self.state.setdefault("announced_vids", {})
                 for k in keys:
                     ann_map[k] = vid
-                ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
+                if kind == "live" and live_start_unix is not None:
+                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind, "start": int(live_start_unix)}
+                else:
+                    ann_vids[str(vid)] = {"ts": int(now.timestamp()), "kind": kind}
                 _write_json_best_effort(STATE_PATH, self.state)
                 delay_min = None
                 if start_ts is not None:
